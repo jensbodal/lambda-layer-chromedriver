@@ -1,0 +1,5 @@
+/handler/
+!/handler/index.js
+/layers/
+/opt/
+*.zip

@@ -1,0 +1,53 @@
+ARG LAYER_NAME=lambda-layer-wdio
+
+##########################################################################
+# Build lambda layer for running webdriver.io
+##########################################################################
+FROM jensbodal/lambda-amazonlinux2:node10-chromedriver AS lambda-layer-wdio-builder
+
+ARG LAYER_NAME
+ENV LAYER_NAME ${LAYER_NAME}
+
+RUN yum install -y zip
+
+WORKDIR /opt/nodejs
+
+RUN npm install \
+  --no-optional \
+  --no-package-lock \
+  @wdio/cli@5.11.10 \
+  @wdio/local-runner@5.11.10 \
+  @wdio/mocha-framework@5.11.0 \
+  chai@4.2.0 \
+  wdio-chromedriver-service@5.0.2
+
+WORKDIR /opt
+
+RUN zip -9 --filesync --recurse-paths --symlinks "${LAYER_NAME}.zip" "./" && \
+  mv "${LAYER_NAME}.zip" "/home"
+
+WORKDIR /home
+
+##########################################################################
+# Use layer for running tests
+##########################################################################
+FROM jensbodal/lambda-amazonlinux2:node10-chromedriver AS wdio-test
+
+COPY --from=lambda-layer-wdio-builder /opt /opt
+
+WORKDIR /opt/nodejs
+
+COPY ./wdio-files ./
+
+ENTRYPOINT ["node", "start.js"]
+
+##########################################################################
+# lambci-node10
+##########################################################################
+FROM lambci/lambda:nodejs10.x AS lambci-node10-wdio-test
+
+COPY --from=wdio-test /opt /opt
+
+WORKDIR /opt/nodejs
+
+ENTRYPOINT ["node", "start.js"]

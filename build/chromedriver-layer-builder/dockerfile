@@ -1,0 +1,169 @@
+# layer file created at lambda-layer-chromedriver-al2-node10-builder:/home/lambda-layer-chromedriver-al2-node10.zip
+
+ARG LAYER_NAME=lambda-layer-chromedriver-al2-node10
+ARG AL_IMAGE=amazonlinux:2.0.20190508
+ARG NODE_VERSION=10.15.3
+# https://github.com/GoogleChrome/puppeteer/blob/v1.19.0/package.json
+# https://commondatastorage.googleapis.com/chromium-browser-snapshots/index.html?prefix=Linux_x64/674921/
+# https://chromium.googlesource.com/chromium/src/+/312d84c8ce62810976feda0d3457108a6dfff9e6/chrome/VERSION
+# 77.0.3844.0
+ARG CHROME_BUILD=674921
+
+##########################################################################
+# Build node for AmazonLinux2
+##########################################################################
+FROM ${AL_IMAGE} AS al2-node10-builder
+
+ARG NODE_VERSION
+ENV NODE_VERSION ${NODE_VERSION}
+
+RUN yum install -y \
+  gcc-c++ \
+  gzip \
+  make \
+  tar \
+  wget \
+  which
+
+RUN export NODE_FOLDER_NAME="node-v${NODE_VERSION}" && \
+  export NODE_FILE_NAME="${NODE_FOLDER_NAME}.tar.gz" && \
+  wget "https://nodejs.org/download/release/v${NODE_VERSION}/${NODE_FILE_NAME}" -O "/tmp/${NODE_FILE_NAME}" && \
+  tar -zxvf "/tmp/${NODE_FILE_NAME}" -C /tmp && \
+  cd "/tmp/${NODE_FOLDER_NAME}" && \
+  ./configure && \
+  make && \
+  make install
+
+RUN mkdir -p /fakeroot/usr/local/bin && \
+  mkdir -p /fakeroot/usr/local/lib && \
+  cp -a /usr/local/bin/node /fakeroot/usr/local/bin && \
+  cp -a /usr/local/bin/npm /fakeroot/usr/local/bin && \
+  cp -a /usr/local/bin/npx /fakeroot/usr/local/bin && \
+  cp -aR /usr/local/lib/node_modules /fakeroot/usr/local/lib
+
+##########################################################################
+# "Base" AmazonLinux2 node docker image
+##########################################################################
+FROM ${AL_IMAGE} AS al2-node10
+
+ENV LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/opt/lib \
+  PATH=${PATH}:/opt/bin
+
+COPY --from=al2-node10-builder /fakeroot /
+
+##########################################################################
+# Download chromedriver
+##########################################################################
+FROM alpine:latest AS chromedriver-downloader
+
+ARG CHROME_BUILD
+ENV CHROME_BUILD ${CHROME_BUILD}
+ENV CHROMEDRIVER_ZIP_URL "https://www.googleapis.com/download/storage/v1/b/chromium-browser-snapshots/o/Linux_x64%2F${CHROME_BUILD}%2Fchromedriver_linux64.zip?alt=media"
+ENV CHROMEDRIVER_ZIP_FILE "${CHROME_BUILD}-chromedriver.zip"
+
+RUN apk --no-cache add curl unzip
+
+WORKDIR /home
+
+RUN  curl -# ${CHROMEDRIVER_ZIP_URL} > ${CHROMEDRIVER_ZIP_FILE} && \
+  # ./chromedriver_linux64
+  unzip -q ${CHROMEDRIVER_ZIP_FILE}
+
+##########################################################################
+# Install chromedriver dependencies
+##########################################################################
+FROM ${AL_IMAGE} AS chromium-chromedriver-al2-deps-builder
+
+COPY ./fonts.conf /opt/usr/share/fontconfig/
+
+RUN yum install -y yum-utils rpmdevtools
+
+WORKDIR /tmp
+# list partially generated via doing ldd chromedriver
+# libraries can be looked up via https://rpmfind.net/linux/rpm2html/search.php?query=libsystemd.so.0&submit=Search+...&system=Fedora&arch=
+RUN yumdownloader \
+  at-spi2-core.x86_64 \
+  atk.x86_64 \
+  bzip2-libs.x86_64 \
+  dbus-libs.x86_64 \
+  elfutils-libelf.x86_64 \
+  elfutils-libs.x86_64 \
+  expat.x86_64 \
+  glib2.x86_64 \
+  libX11.x86_64 \
+  libXScrnSaver.x86_64 \
+  libXau.x86_64 \
+  libXcomposite.x86_64 \
+  libXcursor.x86_64 \
+  libXdamage.x86_64 \
+  libXext.x86_64 \
+  libXfixes.x86_64 \
+  libXi.x86_64 \
+  libXrandr.x86_64 \
+  libXrender.x86_64 \
+  libXtst.x86_64 \
+  libappindicator-gtk3.x86_64 \
+  libattr.x86_64 \
+  libblkid.x86_64 \
+  libgcrypt.x86_64 \
+  libgpg-error.x86_64 \
+  libmount.x86_64 \
+  libuuid.x86_64 \
+  libxcb.x86_64 \
+  lz4.x86_64 \
+  mesa-libGLES.x86_64 \
+  nss-softokn.x86_64 \
+  nss.x86_64 \
+  sqlite.x86_64 \
+  stix-fonts.noarch \
+  system-lsb-core.x86_64 \
+  systemd-libs.x86_64 \
+  xdg-utils.noarch \
+  xz-libs.x86_64
+
+RUN \
+  rpmdev-extract *.rpm && \
+  mkdir -p /opt/lib && \
+  mkdir -p /opt/etc/fonts && \
+  cp -aR /tmp/*/usr/lib64/*\.so* /opt/lib && \
+  cp -aR /tmp/*/usr/share/font* /opt/usr/share/ && \
+  cp -aR /tmp/*/etc/fonts/* /opt/etc/fonts
+
+##########################################################################
+# Build layer with chrome-aws-lambda chromium and chromedriver
+##########################################################################
+FROM al2-node10 AS lambda-layer-chromedriver-al2-node10-builder
+
+ARG LAYER_NAME
+ENV CHROMEDRIVER_FILEPATH /tmp/chromedriver
+ENV LAYER_NAME ${LAYER_NAME}
+
+COPY --from=chromedriver-downloader /home/chromedriver_linux64/chromedriver /tmp/chromedriver
+COPY --from=chromium-chromedriver-al2-deps-builder /opt /opt
+
+WORKDIR /opt/nodejs
+
+RUN yum install -y zip
+
+RUN npm install \
+  --no-optional \
+  --no-package-lock \
+  chrome-aws-lambda@1.19.0 \
+  chromedriver@75.1.0 \
+  iltorb@2.4.3
+
+WORKDIR /opt
+
+RUN zip -9 --filesync --recurse-paths --symlinks "${LAYER_NAME}.zip" "./" && \
+  mv "${LAYER_NAME}.zip" "/home"
+
+WORKDIR /home
+
+##########################################################################
+# Stage for publishing lambda-layer-chromedriver-al2-node10 to docker hub
+##########################################################################
+FROM al2-node10 AS lambda-layer-chromedriver-al2-node10-publish
+
+COPY --from=lambda-layer-chromedriver-al2-node10-builder /opt /opt
+
+WORKDIR /opt/nodejs
