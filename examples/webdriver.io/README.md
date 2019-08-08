@@ -3,7 +3,7 @@ This is an example of using the existing lambda layer docker image to build a la
 
 There are three helper scripts included:
 
-**build.sh""
+**build.sh**
 
 Build all the build stages if you want.
 
